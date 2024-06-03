@@ -1,0 +1,206 @@
+import java.security.MessageDigest
+
+plugins {
+  id 'java'
+  id 'war'
+}
+
+group 'com.djerden'
+version '1.0-SNAPSHOT'
+
+repositories {
+  mavenCentral()
+}
+
+ext {
+  junitVersion = '5.9.2'
+}
+
+sourceCompatibility = '11'
+targetCompatibility = '11'
+
+tasks.withType(JavaCompile) {
+  options.encoding = 'UTF-8'
+}
+
+dependencies {
+  implementation 'jakarta.servlet:jakarta.servlet-api:5.0.0'
+  implementation 'org.eclipse.persistence:eclipselink:4.0.2'
+  testImplementation 'org.junit.jupiter:junit-jupiter:5.8.1'
+  compileOnly 'org.eclipse.persistence:org.eclipse.persistence.jpa.modelgen.processor:4.0.1'
+  implementation 'org.eclipse.persistence:org.eclipse.persistence.jpa:4.0.1'
+  implementation 'org.eclipse.persistence:org.eclipse.persistence.asm:9.2.0'
+  implementation 'jakarta.servlet.jsp:jakarta.servlet.jsp-api:3.0.0'
+  implementation 'jakarta.servlet.jsp.jstl:jakarta.servlet.jsp.jstl-api:1.2.7'
+  implementation 'jakarta.faces:jakarta.faces-api:3.0.0'
+  implementation 'jakarta.inject:jakarta.inject-api:2.0.1'
+  implementation 'jakarta.persistence:jakarta.persistence-api:3.1.0'
+  implementation 'org.hibernate:hibernate-core-jakarta:5.6.15.Final'
+  implementation 'jakarta.platform:jakarta.jakartaee-web-api:9.0.0-RC3'
+  compileOnly 'jakarta.platform:jakarta.jakartaee-api:10.0.0'
+  implementation 'org.primefaces:primefaces:12.0.0:jakarta'
+  implementation 'org.glassfish.jaxb:jaxb-runtime:3.0.2'
+  implementation 'jakarta.validation:jakarta.validation-api:3.0.2'
+  implementation 'org.postgresql:postgresql:42.6.0'
+  testImplementation 'org.junit.jupiter:junit-jupiter-api:5.10.2'
+}
+
+
+test {
+useJUnitPlatform()
+  testLogging {
+    events "passed", "skipped", "failed"
+  }
+}
+
+ext.digest = { String algorithm, File file ->
+  def md = MessageDigest.getInstance(algorithm)
+  file.withInputStream { stream ->
+    def buffer = new byte[8192]
+    def read = stream.read(buffer)
+    while (read != -1) {
+      md.update(buffer, 0, read)
+      read = stream.read(buffer)
+    }
+  }
+  md.digest().encodeHex().toString()
+}
+
+
+
+tasks.register('music') {
+  group = 'Custom'
+  description = 'Plays a sound after the build is completed.'
+  dependsOn 'build'
+  doLast {
+    println 'Playing a completion sound...'
+    def clipFile = new File("complete.wav")
+    if (clipFile.exists()) {
+      def clip = javax.sound.sampled.AudioSystem.getClip()
+      def inputStream = javax.sound.sampled.AudioSystem.getAudioInputStream(clipFile)
+      clip.open(inputStream)
+      clip.start()
+    } else {
+      println 'No sound file found'
+    }
+  }
+}
+
+tasks.register('scp', Exec) {
+  group = 'Custom'
+  description = 'Copies the built artifact to a remote server via SCP.'
+  dependsOn 'war'
+  doFirst { println 'Sending war to Helios.' }
+  commandLine 'scp', '-P', '2222', warPath, heliosAddress
+}
+
+tasks.register('doc') {
+//  group = 'Custom'
+//  description = 'Adds MD5 and SHA-1 hashes to the MANIFEST.MF and generates javadoc.'
+//  dependsOn 'build'
+//
+//  doLast {
+//    def jarFile = file("${buildDir}/libs/${project.name}-${project.version}.war")
+//    def md5 = jarFile.withInputStream { digest('MD5') }
+//    def sha1 = jarFile.withInputStream { digest('SHA-1') }
+//
+//    jar {
+//      manifest {
+//        attributes(
+//                'MD5-Digest': md5,
+//                'SHA1-Digest': sha1
+//        )
+//      }
+//    }
+//
+//    def javadocDir = file("${buildDir}/docs/javadoc")
+//    javadoc {
+//      destinationDir = javadocDir
+//    }
+//
+//    jar {
+//      from javadocDir
+//      into 'docs/javadoc'
+//    }
+//  }
+}
+
+tasks.register('alt', Jar) {
+  group = 'Custom'
+  description = 'Creates an alternative version of the program with modified variable and class names.'
+  dependsOn 'build'
+
+  doLast {
+    def srcDir = file("${projectDir}/src/main/java")
+    def altDir = file("${buildDir}/alt/java")
+
+    copy {
+      from srcDir
+      into altDir
+      include '**/*.java'
+      filter { line ->
+        line.replaceAll('original', 'alternative')
+      }
+    }
+
+    def altJar = file("${buildDir}/libs/${project.name}-alt-${project.version}.war")
+    jar {
+      archiveFileName.set(altJar.name)
+      from altDir
+    }
+  }
+}
+
+tasks.register('report') {
+  group = 'Custom'
+  description = 'Saves JUnit report as XML and commits it to SVN.'
+  dependsOn 'test'
+
+  doLast {
+    def reportDir = file("${buildDir}/test-results/test")
+    def svnDir = file('/path/to/svn/repository/reports')
+    def xmlReports = fileTree(reportDir).matching { include '**/*.xml' }
+
+    copy {
+      from xmlReports
+      into svnDir
+    }
+
+    exec {
+      commandLine 'svn', 'add', '--force', svnDir.absolutePath
+    }
+    exec {
+      commandLine 'svn', 'commit', '-m', 'Added JUnit test reports'
+    }
+  }
+}
+
+tasks.register('diff') {
+  group = 'Custom'
+  description = 'Checks the working copy state and commits changes if appropriate.'
+  dependsOn 'build'
+
+  doLast {
+    def paramsFile = file("${projectDir}/params.txt")
+    def ignoredClasses = paramsFile.exists() ? paramsFile.readLines() : []
+
+    def grgit = org.ajoberstar.grgit.Grgit.open()
+    def status = grgit.status()
+
+    def toCommit = status.modified.findAll { !ignoredClasses.contains(it) }
+
+    if (toCommit) {
+      println "Committing changes: ${toCommit}"
+      grgit.commit(message: 'Committed changes', paths: toCommit)
+    } else {
+      println 'No relevant changes to commit'
+    }
+
+    grgit.close()
+  }
+}
+
+
+
+
+
