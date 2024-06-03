@@ -178,25 +178,31 @@ tasks.register('report') {
 tasks.register('diff') {
   group = 'Custom'
   description = 'Checks the working copy state and commits changes if appropriate.'
-  dependsOn 'build'
-
   doLast {
-    def paramsFile = file("${projectDir}/params.txt")
-    def ignoredClasses = paramsFile.exists() ? paramsFile.readLines() : []
-
-    def grgit = org.ajoberstar.grgit.Grgit.open()
-    def status = grgit.status()
-
-    def toCommit = status.modified.findAll { !ignoredClasses.contains(it) }
-
-    if (toCommit) {
-      println "Committing changes: ${toCommit}"
-      grgit.commit(message: 'Committed changes', paths: toCommit)
-    } else {
-      println 'No relevant changes to commit'
+    def stdout = new ByteArrayOutputStream()
+    def diff = exec {
+      commandLine 'git', 'diff', '--name-only'
+      standardOutput = stdout
     }
-
-    grgit.close()
+    def changedFiles = stdout.toString()
+    if (diff.getExitValue() != 0 || stdout.toString().trim() == '') {
+      println 'No changes. Skipping commit'
+    } else {
+      def excluded = excludedClasses.split()
+      def isExcluded = false
+      excluded.each { excludedClass ->
+        if (changedFiles.contains("${excludedClass}.java")) {
+          isExcluded = true
+          println "Changes affect ${excludedClass}. Skipping commit."
+          return
+        }
+      }
+      if (!isExcluded) {
+        println 'Committing to git...'
+        exec { commandLine 'git', 'add', '.' }
+        exec { commandLine 'git', 'commit', '-m', 'executed diff task' }
+      }
+    }
   }
 }
 
