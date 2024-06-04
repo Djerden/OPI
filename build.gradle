@@ -45,6 +45,16 @@ dependencies {
   testImplementation 'org.junit.jupiter:junit-jupiter-api:5.10.2'
 }
 
+tasks.register('compile') {
+  group = 'build'
+  description = 'Compilation of the project source code'
+  dependsOn 'compileJava'
+  doLast {
+    tasks.withType(JavaCompile).configureEach {
+      options.compilerArgs << "-Xlint:deprecation"
+    }
+  }
+}
 
 test {
 useJUnitPlatform()
@@ -53,21 +63,7 @@ useJUnitPlatform()
   }
 }
 
-ext.digest = { String algorithm, File file ->
-  def md = MessageDigest.getInstance(algorithm)
-  file.withInputStream { stream ->
-    def buffer = new byte[8192]
-    def read = stream.read(buffer)
-    while (read != -1) {
-      md.update(buffer, 0, read)
-      read = stream.read(buffer)
-    }
-  }
-  md.digest().encodeHex().toString()
-}
-
-
-
+// ok
 tasks.register('music') {
   group = 'Custom'
   description = 'Plays a sound after the build is completed.'
@@ -94,87 +90,172 @@ tasks.register('scp', Exec) {
   commandLine 'scp', '-P', '2222', warPath, heliosAddress
 }
 
-tasks.register('doc') {
-//  group = 'Custom'
-//  description = 'Adds MD5 and SHA-1 hashes to the MANIFEST.MF and generates javadoc.'
-//  dependsOn 'build'
-//
-//  doLast {
-//    def jarFile = file("${buildDir}/libs/${project.name}-${project.version}.war")
-//    def md5 = jarFile.withInputStream { digest('MD5') }
-//    def sha1 = jarFile.withInputStream { digest('SHA-1') }
-//
-//    jar {
-//      manifest {
-//        attributes(
-//                'MD5-Digest': md5,
-//                'SHA1-Digest': sha1
-//        )
-//      }
-//    }
-//
-//    def javadocDir = file("${buildDir}/docs/javadoc")
-//    javadoc {
-//      destinationDir = javadocDir
-//    }
-//
-//    jar {
-//      from javadocDir
-//      into 'docs/javadoc'
-//    }
-//  }
+tasks.named('jar', Jar) {
+  dependsOn 'javadoc_task'
+  from("${buildDir}/javadoc") {
+    into 'javadoc'
+  }
+
 }
 
-tasks.register('alt', Jar) {
-  group = 'Custom'
-  description = 'Creates an alternative version of the program with modified variable and class names.'
-  dependsOn 'build'
-
+tasks.register('doc_task') {
   doLast {
-    def srcDir = file("${projectDir}/src/main/java")
-    def altDir = file("${buildDir}/alt/java")
-
-    copy {
-      from srcDir
-      into altDir
-      include '**/*.java'
-      filter { line ->
-        line.replaceAll('original', 'alternative')
+    def manifestContent = new StringBuilder()
+    fileTree(dir: '${projectDir}/src/main/java').visit { FileVisitDetails details ->
+      if (!details.directory) {
+        def md5 = MessageDigest.getInstance('MD5')
+        def sha1 = MessageDigest.getInstance('SHA-1')
+        details.file.withInputStream { is ->
+          byte[] buffer = new byte[1024]
+          int read = 0
+          while ((read = is.read(buffer)) != -1) {
+            md5.update(buffer, 0, read)
+            sha1.update(buffer, 0, read)
+          }
+        }
+        manifestContent.append(details.relativePath)
+                .append(' MD5: ')
+                .append(md5.digest().collect { String.format('%02x', it) }.join())
+                .append(' SHA-1: ')
+                .append(sha1.digest().collect { String.format('%02x', it) }.join())
+                .append('\n')
       }
     }
+    file('src/main/resources/META-INF/MANIFEST.MF').text = manifestContent.toString()
 
-    def altJar = file("${buildDir}/libs/${project.name}-alt-${project.version}.war")
-    jar {
-      archiveFileName.set(altJar.name)
-      from altDir
+    def javadocDir = file("${buildDir}/docs/javadoc")
+    javadocDir.mkdirs()
+    exec {
+      commandLine 'javadoc', '-d', javadocDir, '-sourcepath', '${projectDir}/src/main/java', '-subpackages', '.'
     }
   }
 }
 
+tasks.register('javadoc_task', Javadoc) {
+  group = 'documentation'
+  dependsOn 'compile'
+
+  source = sourceSets.main.allJava
+  destinationDir = file("$buildDir/docs/javadoc")
+  classpath = sourceSets.main.compileClasspath
+
+  options {
+    encoding = 'UTF-8'
+    charSet = 'UTF-8'
+    links("https://docs.oracle.com/en/java/javase/22/docs/api/")
+    addStringOption('Xdoclint:none', '-quiet')
+  }
+}
+
+tasks.register('md5sha1') {
+  group = 'build'
+  description = 'MD5 и SHA-1 хеш-суммы'
+  dependsOn 'jar'
+  doLast {
+    def jarFile = file("build/libs/${project.name}-1.0-SNAPSHOT.jar")
+    if (!jarFile.exists()) {
+      throw new FileNotFoundException("JAR file not found: ${jarFile.absolutePath}")
+    }
+
+    def md5 = MessageDigest.getInstance("MD5")
+    def sha1 = MessageDigest.getInstance("SHA-1")
+
+    jarFile.withInputStream { input ->
+      byte[] buffer = new byte[8192]
+      int bytesRead
+      while ((bytesRead = input.read(buffer)) != -1) {
+        md5.update(buffer, 0, bytesRead)
+        sha1.update(buffer, 0, bytesRead)
+      }
+    }
+
+    def md5Hex = md5.digest().encodeHex().toString()
+    def sha1Hex = sha1.digest().encodeHex().toString()
+
+    def manifestFile = file("src/main/resources/META-INF/MANIFEST.MF")
+    manifestFile.parentFile.mkdirs()
+    manifestFile.withWriterAppend { writer ->
+      writer.println("MD5-Digest: ${md5Hex}")
+      writer.println("SHA1-Digest: ${sha1Hex}")
+    }
+  }
+}
+
+tasks.named('jar', Jar) {
+  dependsOn 'javadoc_task'
+  from("${buildDir}/javadoc") {
+    into 'javadoc'
+  }
+}
+//ok
+tasks.register('doc') {
+  group = 'Custom'
+  dependsOn 'javadoc_task', 'md5sha1'
+}
+//ok
+tasks.register('alt', Jar) {
+  group = 'Custom'
+  description = 'Creates an alternative version of the program.'
+
+  def baseDir = file('src/main/java')
+  def altDir = file("$buildDir/altJava")
+
+  copy {
+    from baseDir
+    into altDir
+  }
+
+  fileTree(altDir).matching {
+    include '**/FakeClass.java'
+  }.each { file ->
+    def newFileName = file.path.replace(
+            'FakeClass.java', 'RealClass.java')
+    file.renameTo(new File(newFileName))
+  }
+
+  def messagesFile = file(
+          "$altDir/FakeClass.java")
+  messagesFile.delete()
+
+  fileTree(altDir).each { file ->
+    file.text = file.text.replaceAll(
+            ' unknownError ', ' error ')
+  }
+
+  archiveFileName.set("Lab3_ALT.jar")
+  from altDir
+}
+
+//ок
 tasks.register('report') {
   group = 'Custom'
   description = 'Saves JUnit report as XML and commits it to SVN.'
   dependsOn 'test'
 
   doLast {
-    def reportDir = file("${buildDir}/test-results/test")
-    def svnDir = file('/path/to/svn/repository/reports')
-    def xmlReports = fileTree(reportDir).matching { include '**/*.xml' }
-
-    copy {
-      from xmlReports
-      into svnDir
-    }
-
-    exec {
-      commandLine 'svn', 'add', '--force', svnDir.absolutePath
-    }
-    exec {
-      commandLine 'svn', 'commit', '-m', 'Added JUnit test reports'
+    def reportFile = file(testReportPath)
+    if (reportFile.exists()) {
+      println 'Adding test report to commit.'
+      def stdout = new ByteArrayOutputStream()
+      def gitStatus = exec {
+        commandLine 'git', 'status', '--porcelain', testReportPath
+        standardOutput = stdout
+      }
+      if (gitStatus.getExitValue() == 0 && stdout.toString().trim() != '') {
+        println 'Committing test report.'
+        exec { commandLine 'git', 'add', '-f', testReportPath }
+        exec { commandLine 'git', 'commit', '-m', 'added test report' }
+      } else {
+        println 'No changes in test report. Skipping commit.'
+      }
+    } else {
+      println 'Tests failed or test report wasn\'t found.'
     }
   }
 }
 
+
+// ok
 tasks.register('diff') {
   group = 'Custom'
   description = 'Checks the working copy state and commits changes if appropriate.'
@@ -205,8 +286,3 @@ tasks.register('diff') {
     }
   }
 }
-
-
-
-
-

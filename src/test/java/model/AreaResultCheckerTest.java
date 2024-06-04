@@ -15,7 +15,7 @@ class AreaResultCheckerTest {
     @Test
     void testCheckArea() {
         assertTrue(AreaResultChecker.checkArea(-1, 1, 2));
-        assertFalse(AreaResultChecker.checkArea(1, -1, 2));
+        assertFalse(AreaResultChecker.checkArea(2, -1, 2));
     }
 
     @Test
