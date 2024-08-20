@@ -1,0 +1,288 @@
+import java.security.MessageDigest
+
+plugins {
+  id 'java'
+  id 'war'
+}
+
+group 'com.djerden'
+version '1.0-SNAPSHOT'
+
+repositories {
+  mavenCentral()
+}
+
+ext {
+  junitVersion = '5.9.2'
+}
+
+sourceCompatibility = '11'
+targetCompatibility = '11'
+
+tasks.withType(JavaCompile) {
+  options.encoding = 'UTF-8'
+}
+
+dependencies {
+  implementation 'jakarta.servlet:jakarta.servlet-api:5.0.0'
+  implementation 'org.eclipse.persistence:eclipselink:4.0.2'
+  testImplementation 'org.junit.jupiter:junit-jupiter:5.8.1'
+  compileOnly 'org.eclipse.persistence:org.eclipse.persistence.jpa.modelgen.processor:4.0.1'
+  implementation 'org.eclipse.persistence:org.eclipse.persistence.jpa:4.0.1'
+  implementation 'org.eclipse.persistence:org.eclipse.persistence.asm:9.2.0'
+  implementation 'jakarta.servlet.jsp:jakarta.servlet.jsp-api:3.0.0'
+  implementation 'jakarta.servlet.jsp.jstl:jakarta.servlet.jsp.jstl-api:1.2.7'
+  implementation 'jakarta.faces:jakarta.faces-api:3.0.0'
+  implementation 'jakarta.inject:jakarta.inject-api:2.0.1'
+  implementation 'jakarta.persistence:jakarta.persistence-api:3.1.0'
+  implementation 'org.hibernate:hibernate-core-jakarta:5.6.15.Final'
+  implementation 'jakarta.platform:jakarta.jakartaee-web-api:9.0.0-RC3'
+  compileOnly 'jakarta.platform:jakarta.jakartaee-api:10.0.0'
+  implementation 'org.primefaces:primefaces:12.0.0:jakarta'
+  implementation 'org.glassfish.jaxb:jaxb-runtime:3.0.2'
+  implementation 'jakarta.validation:jakarta.validation-api:3.0.2'
+  implementation 'org.postgresql:postgresql:42.6.0'
+  testImplementation 'org.junit.jupiter:junit-jupiter-api:5.10.2'
+}
+
+tasks.register('compile') {
+  group = 'build'
+  description = 'Compilation of the project source code'
+  dependsOn 'compileJava'
+  doLast {
+    tasks.withType(JavaCompile).configureEach {
+      options.compilerArgs << "-Xlint:deprecation"
+    }
+  }
+}
+
+test {
+useJUnitPlatform()
+  testLogging {
+    events "passed", "skipped", "failed"
+  }
+}
+
+// ok
+tasks.register('music') {
+  group = 'Custom'
+  description = 'Plays a sound after the build is completed.'
+  dependsOn 'build'
+  doLast {
+    println 'Playing a completion sound...'
+    def clipFile = new File("complete.wav")
+    if (clipFile.exists()) {
+      def clip = javax.sound.sampled.AudioSystem.getClip()
+      def inputStream = javax.sound.sampled.AudioSystem.getAudioInputStream(clipFile)
+      clip.open(inputStream)
+      clip.start()
+    } else {
+      println 'No sound file found'
+    }
+  }
+}
+
+tasks.register('scp', Exec) {
+  group = 'Custom'
+  description = 'Copies the built artifact to a remote server via SCP.'
+  dependsOn 'war'
+  doFirst { println 'Sending war to Helios.' }
+  commandLine 'scp', '-P', '2222', warPath, heliosAddress
+}
+
+tasks.named('jar', Jar) {
+  dependsOn 'javadoc_task'
+  from("${buildDir}/javadoc") {
+    into 'javadoc'
+  }
+
+}
+
+tasks.register('doc_task') {
+  doLast {
+    def manifestContent = new StringBuilder()
+    fileTree(dir: '${projectDir}/src/main/java').visit { FileVisitDetails details ->
+      if (!details.directory) {
+        def md5 = MessageDigest.getInstance('MD5')
+        def sha1 = MessageDigest.getInstance('SHA-1')
+        details.file.withInputStream { is ->
+          byte[] buffer = new byte[1024]
+          int read = 0
+          while ((read = is.read(buffer)) != -1) {
+            md5.update(buffer, 0, read)
+            sha1.update(buffer, 0, read)
+          }
+        }
+        manifestContent.append(details.relativePath)
+                .append(' MD5: ')
+                .append(md5.digest().collect { String.format('%02x', it) }.join())
+                .append(' SHA-1: ')
+                .append(sha1.digest().collect { String.format('%02x', it) }.join())
+                .append('\n')
+      }
+    }
+    file('src/main/resources/META-INF/MANIFEST.MF').text = manifestContent.toString()
+
+    def javadocDir = file("${buildDir}/docs/javadoc")
+    javadocDir.mkdirs()
+    exec {
+      commandLine 'javadoc', '-d', javadocDir, '-sourcepath', '${projectDir}/src/main/java', '-subpackages', '.'
+    }
+  }
+}
+
+tasks.register('javadoc_task', Javadoc) {
+  group = 'documentation'
+  dependsOn 'compile'
+
+  source = sourceSets.main.allJava
+  destinationDir = file("$buildDir/docs/javadoc")
+  classpath = sourceSets.main.compileClasspath
+
+  options {
+    encoding = 'UTF-8'
+    charSet = 'UTF-8'
+    links("https://docs.oracle.com/en/java/javase/22/docs/api/")
+    addStringOption('Xdoclint:none', '-quiet')
+  }
+}
+
+tasks.register('md5sha1') {
+  group = 'build'
+  description = 'MD5 и SHA-1 хеш-суммы'
+  dependsOn 'jar'
+  doLast {
+    def jarFile = file("build/libs/${project.name}-1.0-SNAPSHOT.jar")
+    if (!jarFile.exists()) {
+      throw new FileNotFoundException("JAR file not found: ${jarFile.absolutePath}")
+    }
+
+    def md5 = MessageDigest.getInstance("MD5")
+    def sha1 = MessageDigest.getInstance("SHA-1")
+
+    jarFile.withInputStream { input ->
+      byte[] buffer = new byte[8192]
+      int bytesRead
+      while ((bytesRead = input.read(buffer)) != -1) {
+        md5.update(buffer, 0, bytesRead)
+        sha1.update(buffer, 0, bytesRead)
+      }
+    }
+
+    def md5Hex = md5.digest().encodeHex().toString()
+    def sha1Hex = sha1.digest().encodeHex().toString()
+
+    def manifestFile = file("src/main/resources/META-INF/MANIFEST.MF")
+    manifestFile.parentFile.mkdirs()
+    manifestFile.withWriterAppend { writer ->
+      writer.println("MD5-Digest: ${md5Hex}")
+      writer.println("SHA1-Digest: ${sha1Hex}")
+    }
+  }
+}
+
+tasks.named('jar', Jar) {
+  dependsOn 'javadoc_task'
+  from("${buildDir}/javadoc") {
+    into 'javadoc'
+  }
+}
+//ok
+tasks.register('doc') {
+  group = 'Custom'
+  dependsOn 'javadoc_task', 'md5sha1'
+}
+//ok
+tasks.register('alt', Jar) {
+  group = 'Custom'
+  description = 'Creates an alternative version of the program.'
+
+  def baseDir = file('src/main/java')
+  def altDir = file("$buildDir/altJava")
+
+  copy {
+    from baseDir
+    into altDir
+  }
+
+  fileTree(altDir).matching {
+    include '**/FakeClass.java'
+  }.each { file ->
+    def newFileName = file.path.replace(
+            'FakeClass.java', 'RealClass.java')
+    file.renameTo(new File(newFileName))
+  }
+
+  def messagesFile = file(
+          "$altDir/FakeClass.java")
+  messagesFile.delete()
+
+  fileTree(altDir).each { file ->
+    file.text = file.text.replaceAll(
+            ' unknownError ', ' error ')
+  }
+
+  archiveFileName.set("Lab3_ALT.jar")
+  from altDir
+}
+
+//ок
+tasks.register('report') {
+  group = 'Custom'
+  description = 'Saves JUnit report as XML and commits it to SVN.'
+  dependsOn 'test'
+
+  doLast {
+    def reportFile = file(testReportPath)
+    if (reportFile.exists()) {
+      println 'Adding test report to commit.'
+      def stdout = new ByteArrayOutputStream()
+      def gitStatus = exec {
+        commandLine 'git', 'status', '--porcelain', testReportPath
+        standardOutput = stdout
+      }
+      if (gitStatus.getExitValue() == 0 && stdout.toString().trim() != '') {
+        println 'Committing test report.'
+        exec { commandLine 'git', 'add', '-f', testReportPath }
+        exec { commandLine 'git', 'commit', '-m', 'added test report' }
+      } else {
+        println 'No changes in test report. Skipping commit.'
+      }
+    } else {
+      println 'Tests failed or test report wasn\'t found.'
+    }
+  }
+}
+
+
+// ok
+tasks.register('diff') {
+  group = 'Custom'
+  description = 'Checks the working copy state and commits changes if appropriate.'
+  doLast {
+    def stdout = new ByteArrayOutputStream()
+    def diff = exec {
+      commandLine 'git', 'diff', '--name-only'
+      standardOutput = stdout
+    }
+    def changedFiles = stdout.toString()
+    if (diff.getExitValue() != 0 || stdout.toString().trim() == '') {
+      println 'No changes. Skipping commit'
+    } else {
+      def excluded = excludedClasses.split()
+      def isExcluded = false
+      excluded.each { excludedClass ->
+        if (changedFiles.contains("${excludedClass}.java")) {
+          isExcluded = true
+          println "Changes affect ${excludedClass}. Skipping commit."
+          return
+        }
+      }
+      if (!isExcluded) {
+        println 'Committing to git...'
+        exec { commandLine 'git', 'add', '.' }
+        exec { commandLine 'git', 'commit', '-m', 'executed diff task' }
+      }
+    }
+  }
+}
